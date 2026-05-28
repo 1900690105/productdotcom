@@ -158,7 +158,6 @@ function App() {
     setUpdating(false);
   };
 
-  // --- DELETE ---
   const handleDelete = async (id) => {
     setDeletingId(id);
     const { error } = await supabase.from("comments").delete().eq("id", id);
