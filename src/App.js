@@ -6,7 +6,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
-  const [newIds, setNewIds] = useState(new Set()); // IDs that just arrived via realtime
+  const [newIds, setNewIds] = useState(new Set());
 
   // Edit state
   const [editingId, setEditingId] = useState(null);
