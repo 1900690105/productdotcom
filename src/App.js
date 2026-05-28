@@ -7,6 +7,8 @@ function App() {
   const [submitting, setSubmitting] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [newIds, setNewIds] = useState(new Set());
+  const [likedIds, setLikedIds] = useState(new Set()); // tracked in React state
+  const [likingIds, setLikingIds] = useState(new Set());
 
   // Edit state
   const [editingId, setEditingId] = useState(null);
@@ -19,9 +21,9 @@ function App() {
 
   const [formData, setFormData] = useState({ name: "", comment: "" });
 
-  // Keep a ref so realtime callbacks always see latest comments
   const commentsRef = useRef([]);
   commentsRef.current = comments;
+  const pendingLikeIds = useRef(new Set());
 
   // ── Initial fetch ──────────────────────────────────────────────
   const fetchComments = async () => {
@@ -35,6 +37,18 @@ function App() {
     else setComments(data);
     setLoading(false);
   };
+
+  useEffect(() => {
+    const stored = localStorage.getItem("likedComments");
+
+    if (stored) {
+      setLikedIds(new Set(JSON.parse(stored)));
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem("likedComments", JSON.stringify([...likedIds]));
+  }, [likedIds]);
 
   // ── Realtime subscription ──────────────────────────────────────
   useEffect(() => {
@@ -50,7 +64,6 @@ function App() {
 
           if (eventType === "INSERT") {
             setComments((prev) => [newRow, ...prev]);
-            // Highlight the new comment briefly
             setNewIds((prev) => new Set(prev).add(newRow.id));
             setTimeout(() => {
               setNewIds((prev) => {
@@ -62,8 +75,31 @@ function App() {
           }
 
           if (eventType === "UPDATE") {
+            // If WE triggered this update (like/unlike), skip — our optimistic state is correct
             setComments((prev) =>
-              prev.map((c) => (c.id === newRow.id ? newRow : c)),
+              prev.map((c) =>
+                c.id === newRow.id
+                  ? {
+                      ...c,
+                      likes: newRow.likes,
+                      name: newRow.name,
+                      comment: newRow.comment,
+                    }
+                  : c,
+              ),
+            );
+            // Otherwise it's from another user (edit or like from another tab) — sync everything
+            setComments((prev) =>
+              prev.map((c) =>
+                c.id === newRow.id
+                  ? {
+                      ...c,
+                      name: newRow.name,
+                      comment: newRow.comment,
+                      likes: newRow.likes,
+                    }
+                  : c,
+              ),
             );
           }
 
@@ -92,11 +128,10 @@ function App() {
     setSubmitting(true);
     const { error } = await supabase
       .from("comments")
-      .insert([{ name: formData.name, comment: formData.comment }]);
+      .insert([{ name: formData.name, comment: formData.comment, likes: 0 }]);
 
     if (error) console.log(error);
     else setFormData({ name: "", comment: "" });
-    // No manual fetchComments — realtime INSERT handles the update
     setSubmitting(false);
   };
 
@@ -122,7 +157,6 @@ function App() {
 
     if (error) console.log(error);
     else cancelEdit();
-    // Realtime UPDATE event handles state refresh
     setUpdating(false);
   };
 
@@ -131,9 +165,68 @@ function App() {
     setDeletingId(id);
     const { error } = await supabase.from("comments").delete().eq("id", id);
     if (error) console.log(error);
-    // Realtime DELETE event handles state refresh
     setDeletingId(null);
     setConfirmDeleteId(null);
+  };
+
+  // --- LIKE ---
+  const handleLike = async (comment) => {
+    if (likingIds.has(comment.id)) return;
+
+    const alreadyLiked = likedIds.has(comment.id);
+
+    // Optimistic UI
+    setLikedIds((prev) => {
+      const next = new Set(prev);
+
+      if (alreadyLiked) {
+        next.delete(comment.id);
+      } else {
+        next.add(comment.id);
+      }
+
+      return next;
+    });
+
+    setComments((prev) =>
+      prev.map((c) =>
+        c.id === comment.id
+          ? {
+              ...c,
+              likes: Math.max(0, (c.likes ?? 0) + (alreadyLiked ? -1 : 1)),
+            }
+          : c,
+      ),
+    );
+
+    setLikingIds((prev) => new Set(prev).add(comment.id));
+
+    const { error } = await supabase.rpc(
+      alreadyLiked ? "decrement_like" : "increment_like",
+      { comment_id: comment.id },
+    );
+
+    if (error) {
+      console.log("Like error:", error);
+
+      // rollback
+      setComments((prev) =>
+        prev.map((c) =>
+          c.id === comment.id
+            ? {
+                ...c,
+                likes: Math.max(0, (c.likes ?? 0) + (alreadyLiked ? 1 : -1)),
+              }
+            : c,
+        ),
+      );
+    }
+
+    setLikingIds((prev) => {
+      const next = new Set(prev);
+      next.delete(comment.id);
+      return next;
+    });
   };
 
   const getInitial = (name) => name?.charAt(0)?.toUpperCase() || "?";
@@ -174,6 +267,22 @@ function App() {
     </svg>
   );
 
+  const HeartIcon = ({ filled, spinning, className = "w-4 h-4" }) => (
+    <svg
+      className={`${className} transition-transform duration-150 ${spinning ? "scale-125" : "scale-100"}`}
+      fill={filled ? "currentColor" : "none"}
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"
+      />
+    </svg>
+  );
+
   return (
     <div className="min-h-screen bg-stone-50 font-serif">
       {/* Header */}
@@ -185,8 +294,6 @@ function App() {
               Discussion
             </span>
           </div>
-
-          {/* Realtime status pill */}
           <div
             className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-sans font-medium transition-all duration-500
             ${
@@ -204,7 +311,6 @@ function App() {
       </header>
 
       <main className="max-w-2xl mx-auto px-6 py-12">
-        {/* Title */}
         <div className="mb-10">
           <h1 className="text-4xl font-bold text-stone-800 leading-tight tracking-tight">
             Join the Conversation
@@ -219,7 +325,6 @@ function App() {
           <h2 className="text-xs font-sans font-semibold tracking-widest uppercase text-stone-400 mb-5">
             New Comment
           </h2>
-
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label className="block text-xs font-sans font-medium text-stone-500 mb-1.5 tracking-wide uppercase">
@@ -238,7 +343,6 @@ function App() {
                   transition-all duration-200 hover:border-stone-300"
               />
             </div>
-
             <div>
               <label className="block text-xs font-sans font-medium text-stone-500 mb-1.5 tracking-wide uppercase">
                 Comment
@@ -256,7 +360,6 @@ function App() {
                   transition-all duration-200 hover:border-stone-300"
               />
             </div>
-
             <div className="flex justify-end pt-1">
               <button
                 type="submit"
@@ -267,8 +370,8 @@ function App() {
                 }
                 className="inline-flex items-center gap-2 bg-stone-800 hover:bg-stone-700
                   disabled:bg-stone-300 disabled:cursor-not-allowed
-                  text-white font-sans text-sm font-medium
-                  px-6 py-3 rounded-xl transition-all duration-200 active:scale-95"
+                  text-white font-sans text-sm font-medium px-6 py-3 rounded-xl
+                  transition-all duration-200 active:scale-95"
               >
                 {submitting ? (
                   <>
@@ -318,214 +421,239 @@ function App() {
             </div>
           ) : (
             <div className="space-y-4">
-              {comments.map((comment, i) => (
-                <div
-                  key={comment.id}
-                  className={`group bg-white rounded-2xl border transition-all duration-500
-                    ${
-                      editingId === comment.id
-                        ? "border-amber-300 shadow-md shadow-amber-50"
-                        : confirmDeleteId === comment.id
-                          ? "border-rose-200 shadow-md shadow-rose-50"
-                          : newIds.has(comment.id)
-                            ? "border-emerald-300 shadow-md shadow-emerald-50 scale-[1.01]"
-                            : "border-stone-200 hover:border-stone-300 hover:shadow-sm"
-                    }`}
-                >
-                  {editingId === comment.id ? (
-                    /* ── EDIT MODE ── */
-                    <div className="p-5 space-y-3">
-                      <p className="text-xs font-sans font-semibold tracking-widest uppercase text-amber-500 mb-3">
-                        Editing
-                      </p>
-                      <input
-                        type="text"
-                        value={editData.name}
-                        onChange={(e) =>
-                          setEditData({ ...editData, name: e.target.value })
-                        }
-                        className="w-full px-4 py-2.5 rounded-xl border border-stone-200 bg-stone-50
-                          text-stone-800 font-sans text-sm
-                          focus:outline-none focus:ring-2 focus:ring-amber-300 focus:border-transparent
-                          transition-all duration-200"
-                        placeholder="Name"
-                      />
-                      <textarea
-                        value={editData.comment}
-                        onChange={(e) =>
-                          setEditData({ ...editData, comment: e.target.value })
-                        }
-                        rows={3}
-                        className="w-full px-4 py-2.5 rounded-xl border border-stone-200 bg-stone-50
-                          text-stone-800 font-sans text-sm resize-none
-                          focus:outline-none focus:ring-2 focus:ring-amber-300 focus:border-transparent
-                          transition-all duration-200"
-                        placeholder="Comment"
-                      />
-                      <div className="flex items-center gap-2 justify-end pt-1">
-                        <button
-                          onClick={cancelEdit}
-                          className="px-4 py-2 rounded-xl text-xs font-sans font-medium text-stone-500
-                            hover:bg-stone-100 transition-all duration-150"
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          onClick={() => handleUpdate(comment.id)}
-                          disabled={
-                            updating ||
-                            !editData.name.trim() ||
-                            !editData.comment.trim()
+              {comments.map((comment, i) => {
+                const isLiked = likedIds.has(comment.id);
+                const isLiking = likingIds.has(comment.id);
+                const likeCount = comment.likes ?? 0;
+
+                return (
+                  <div
+                    key={comment.id}
+                    className={`group bg-white rounded-2xl border transition-all duration-500
+                      ${
+                        editingId === comment.id
+                          ? "border-amber-300 shadow-md shadow-amber-50"
+                          : confirmDeleteId === comment.id
+                            ? "border-rose-200 shadow-md shadow-rose-50"
+                            : newIds.has(comment.id)
+                              ? "border-emerald-300 shadow-md shadow-emerald-50 scale-[1.01]"
+                              : "border-stone-200 hover:border-stone-300 hover:shadow-sm"
+                      }`}
+                  >
+                    {editingId === comment.id ? (
+                      /* ── EDIT MODE ── */
+                      <div className="p-5 space-y-3">
+                        <p className="text-xs font-sans font-semibold tracking-widest uppercase text-amber-500 mb-3">
+                          Editing
+                        </p>
+                        <input
+                          type="text"
+                          value={editData.name}
+                          onChange={(e) =>
+                            setEditData({ ...editData, name: e.target.value })
                           }
-                          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl
-                            bg-amber-400 hover:bg-amber-500 disabled:bg-stone-200 disabled:cursor-not-allowed
-                            text-white text-xs font-sans font-semibold
-                            transition-all duration-150 active:scale-95"
-                        >
-                          {updating ? (
-                            <>
-                              <Spinner /> Saving…
-                            </>
-                          ) : (
-                            "Save Changes"
-                          )}
-                        </button>
-                      </div>
-                    </div>
-                  ) : confirmDeleteId === comment.id ? (
-                    /* ── DELETE CONFIRM ── */
-                    <div className="p-5">
-                      <div className="flex items-start gap-4">
-                        <div
-                          className={`w-9 h-9 rounded-full flex items-center justify-center
-                          text-sm font-bold font-sans flex-shrink-0 opacity-40 ${getAvatarColor(comment.name)}`}
-                        >
-                          {getInitial(comment.name)}
-                        </div>
-                        <div className="flex-1">
-                          <p className="font-sans font-semibold text-stone-700 text-sm mb-0.5">
-                            {comment.name}
-                          </p>
-                          <p className="text-stone-400 text-sm line-through leading-relaxed font-sans">
-                            {comment.comment}
-                          </p>
-                          <div className="flex items-center gap-2 mt-4">
-                            <p className="text-xs font-sans text-rose-500 font-medium flex-1">
-                              Delete this comment?
-                            </p>
-                            <button
-                              onClick={() => setConfirmDeleteId(null)}
-                              className="px-3 py-1.5 rounded-lg text-xs font-sans font-medium text-stone-500
-                                hover:bg-stone-100 transition-all duration-150"
-                            >
-                              Cancel
-                            </button>
-                            <button
-                              onClick={() => handleDelete(comment.id)}
-                              disabled={deletingId === comment.id}
-                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg
-                                bg-rose-500 hover:bg-rose-600 disabled:bg-rose-300
-                                text-white text-xs font-sans font-semibold
-                                transition-all duration-150 active:scale-95"
-                            >
-                              {deletingId === comment.id ? (
-                                <>
-                                  <Spinner /> Deleting…
-                                </>
-                              ) : (
-                                "Yes, delete"
-                              )}
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    /* ── DEFAULT VIEW ── */
-                    <div className="p-5">
-                      {newIds.has(comment.id) && (
-                        <div className="flex items-center gap-1.5 mb-3">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                          <span className="text-xs font-sans font-medium text-emerald-500 tracking-wide">
-                            Just posted
-                          </span>
-                        </div>
-                      )}
-                      <div className="flex items-start gap-4">
-                        <div
-                          className={`w-9 h-9 rounded-full flex items-center justify-center
-                          text-sm font-bold font-sans flex-shrink-0 ${getAvatarColor(comment.name)}`}
-                        >
-                          {getInitial(comment.name)}
-                        </div>
-
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 mb-2">
-                            <span className="font-sans font-semibold text-stone-700 text-sm">
-                              {comment.name}
-                            </span>
-                            {i === 0 && !newIds.has(comment.id) && (
-                              <span className="bg-amber-100 text-amber-600 text-xs font-sans font-medium px-2 py-0.5 rounded-full">
-                                Latest
-                              </span>
+                          className="w-full px-4 py-2.5 rounded-xl border border-stone-200 bg-stone-50
+                            text-stone-800 font-sans text-sm focus:outline-none focus:ring-2
+                            focus:ring-amber-300 focus:border-transparent transition-all duration-200"
+                          placeholder="Name"
+                        />
+                        <textarea
+                          value={editData.comment}
+                          onChange={(e) =>
+                            setEditData({
+                              ...editData,
+                              comment: e.target.value,
+                            })
+                          }
+                          rows={3}
+                          className="w-full px-4 py-2.5 rounded-xl border border-stone-200 bg-stone-50
+                            text-stone-800 font-sans text-sm resize-none focus:outline-none focus:ring-2
+                            focus:ring-amber-300 focus:border-transparent transition-all duration-200"
+                          placeholder="Comment"
+                        />
+                        <div className="flex items-center gap-2 justify-end pt-1">
+                          <button
+                            onClick={cancelEdit}
+                            className="px-4 py-2 rounded-xl text-xs font-sans font-medium text-stone-500 hover:bg-stone-100 transition-all duration-150"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            onClick={() => handleUpdate(comment.id)}
+                            disabled={
+                              updating ||
+                              !editData.name.trim() ||
+                              !editData.comment.trim()
+                            }
+                            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl
+                              bg-amber-400 hover:bg-amber-500 disabled:bg-stone-200 disabled:cursor-not-allowed
+                              text-white text-xs font-sans font-semibold transition-all duration-150 active:scale-95"
+                          >
+                            {updating ? (
+                              <>
+                                <Spinner /> Saving…
+                              </>
+                            ) : (
+                              "Save Changes"
                             )}
-                          </div>
-                          <p className="text-stone-600 text-sm leading-relaxed font-sans">
-                            {comment.comment}
-                          </p>
-                        </div>
-
-                        {/* Action buttons — visible on hover */}
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150 flex-shrink-0">
-                          <button
-                            onClick={() => startEdit(comment)}
-                            title="Edit"
-                            className="p-2 rounded-lg text-stone-400 hover:text-amber-500 hover:bg-amber-50
-                              transition-all duration-150"
-                          >
-                            <svg
-                              className="w-4 h-4"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                strokeWidth={2}
-                                d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-                              />
-                            </svg>
-                          </button>
-                          <button
-                            onClick={() => {
-                              setConfirmDeleteId(comment.id);
-                              setEditingId(null);
-                            }}
-                            title="Delete"
-                            className="p-2 rounded-lg text-stone-400 hover:text-rose-500 hover:bg-rose-50
-                              transition-all duration-150"
-                          >
-                            <svg
-                              className="w-4 h-4"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                strokeWidth={2}
-                                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                              />
-                            </svg>
                           </button>
                         </div>
                       </div>
-                    </div>
-                  )}
-                </div>
-              ))}
+                    ) : confirmDeleteId === comment.id ? (
+                      /* ── DELETE CONFIRM ── */
+                      <div className="p-5">
+                        <div className="flex items-start gap-4">
+                          <div
+                            className={`w-9 h-9 rounded-full flex items-center justify-center
+                            text-sm font-bold font-sans flex-shrink-0 opacity-40 ${getAvatarColor(comment.name)}`}
+                          >
+                            {getInitial(comment.name)}
+                          </div>
+                          <div className="flex-1">
+                            <p className="font-sans font-semibold text-stone-700 text-sm mb-0.5">
+                              {comment.name}
+                            </p>
+                            <p className="text-stone-400 text-sm line-through leading-relaxed font-sans">
+                              {comment.comment}
+                            </p>
+                            <div className="flex items-center gap-2 mt-4">
+                              <p className="text-xs font-sans text-rose-500 font-medium flex-1">
+                                Delete this comment?
+                              </p>
+                              <button
+                                onClick={() => setConfirmDeleteId(null)}
+                                className="px-3 py-1.5 rounded-lg text-xs font-sans font-medium text-stone-500 hover:bg-stone-100 transition-all duration-150"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                onClick={() => handleDelete(comment.id)}
+                                disabled={deletingId === comment.id}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg
+                                  bg-rose-500 hover:bg-rose-600 disabled:bg-rose-300
+                                  text-white text-xs font-sans font-semibold transition-all duration-150 active:scale-95"
+                              >
+                                {deletingId === comment.id ? (
+                                  <>
+                                    <Spinner /> Deleting…
+                                  </>
+                                ) : (
+                                  "Yes, delete"
+                                )}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      /* ── DEFAULT VIEW ── */
+                      <div className="p-5">
+                        {newIds.has(comment.id) && (
+                          <div className="flex items-center gap-1.5 mb-3">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                            <span className="text-xs font-sans font-medium text-emerald-500 tracking-wide">
+                              Just posted
+                            </span>
+                          </div>
+                        )}
+                        <div className="flex items-start gap-4">
+                          <div
+                            className={`w-9 h-9 rounded-full flex items-center justify-center
+                            text-sm font-bold font-sans flex-shrink-0 ${getAvatarColor(comment.name)}`}
+                          >
+                            {getInitial(comment.name)}
+                          </div>
+
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-2">
+                              <span className="font-sans font-semibold text-stone-700 text-sm">
+                                {comment.name}
+                              </span>
+                              {i === 0 && !newIds.has(comment.id) && (
+                                <span className="bg-amber-100 text-amber-600 text-xs font-sans font-medium px-2 py-0.5 rounded-full">
+                                  Latest
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-stone-600 text-sm leading-relaxed font-sans">
+                              {comment.comment}
+                            </p>
+
+                            {/* ── LIKE BUTTON ── */}
+                            <div className="mt-3">
+                              <button
+                                onClick={() => handleLike(comment)}
+                                disabled={isLiking}
+                                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-sans font-medium
+                                  transition-all duration-150 select-none
+                                  ${
+                                    isLiked
+                                      ? "text-rose-500 bg-rose-50 hover:bg-rose-100"
+                                      : "text-stone-400 hover:text-rose-400 hover:bg-rose-50"
+                                  }`}
+                              >
+                                <HeartIcon
+                                  filled={isLiked}
+                                  spinning={isLiking}
+                                  className="w-3.5 h-3.5"
+                                />
+                                <span className="tabular-nums min-w-[1ch]">
+                                  {likeCount}
+                                </span>
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Edit / Delete — hover */}
+                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150 flex-shrink-0">
+                            <button
+                              onClick={() => startEdit(comment)}
+                              title="Edit"
+                              className="p-2 rounded-lg text-stone-400 hover:text-amber-500 hover:bg-amber-50 transition-all duration-150"
+                            >
+                              <svg
+                                className="w-4 h-4"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                                />
+                              </svg>
+                            </button>
+                            <button
+                              onClick={() => {
+                                setConfirmDeleteId(comment.id);
+                                setEditingId(null);
+                              }}
+                              title="Delete"
+                              className="p-2 rounded-lg text-stone-400 hover:text-rose-500 hover:bg-rose-50 transition-all duration-150"
+                            >
+                              <svg
+                                className="w-4 h-4"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                                />
+                              </svg>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
