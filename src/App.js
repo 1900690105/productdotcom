@@ -9,8 +9,6 @@ function App() {
   const [newIds, setNewIds] = useState(new Set());
   const [likedIds, setLikedIds] = useState(new Set()); // tracked in React state
   const [likingIds, setLikingIds] = useState(new Set());
-
-  // Edit state
   const [editingId, setEditingId] = useState(null);
   const [editData, setEditData] = useState({ name: "", comment: "" });
   const [updating, setUpdating] = useState(false);
