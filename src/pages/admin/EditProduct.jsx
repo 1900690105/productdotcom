@@ -37,7 +37,7 @@ function EditProduct() {
     }
 
     getProduct();
-  }, []);
+  }, [id]);
 
   async function updateProduct(e) {
     e.preventDefault();
