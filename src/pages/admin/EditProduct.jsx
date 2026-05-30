@@ -23,21 +23,21 @@ function EditProduct() {
   const [newImage, setNewImage] = useState(null);
 
   useEffect(() => {
+    async function getProduct() {
+      const { data } = await supabase
+        .from("products")
+        .select("*")
+        .eq("id", id)
+        .single();
+
+      setName(data.name);
+      setPrice(data.price);
+      setDescription(data.description);
+      setImage(data.image);
+    }
+
     getProduct();
   }, []);
-
-  async function getProduct() {
-    const { data } = await supabase
-      .from("products")
-      .select("*")
-      .eq("id", id)
-      .single();
-
-    setName(data.name);
-    setPrice(data.price);
-    setDescription(data.description);
-    setImage(data.image);
-  }
 
   async function updateProduct(e) {
     e.preventDefault();
