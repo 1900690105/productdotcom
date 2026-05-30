@@ -92,13 +92,13 @@ function Login() {
         }
 
         await emailjs.send(
-          "service_p2qrkqt",
-          "template_es4kttf",
+          `${process.env.REACT_APP_SERVICE}`,
+          `${process.env.REACT_APP_TEMPLETE}`,
           {
             email: email,
             message: "Welcome to our platform 🎉",
           },
-          "uGSFwzWUAPhd2R308",
+          `${process.env.REACT_APP_PUBLIC_KEY}`,
         );
 
         alert("Signup Successful! Please Login");
