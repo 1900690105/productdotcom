@@ -1,25 +1,16 @@
 import { useEffect, useState } from "react";
-
 import { useNavigate, useParams } from "react-router-dom";
-
 import { supabase } from "../../supabase";
-
 import Sidebar from "../../components/Sidebar";
 import Navbar from "../../components/Navbar";
 
 function EditProduct() {
   const { id } = useParams();
-
   const navigate = useNavigate();
-
   const [name, setName] = useState("");
-
   const [price, setPrice] = useState("");
-
   const [description, setDescription] = useState("");
-
   const [image, setImage] = useState("");
-
   const [newImage, setNewImage] = useState(null);
 
   useEffect(() => {
@@ -35,7 +26,6 @@ function EditProduct() {
       setDescription(data.description);
       setImage(data.image);
     }
-
     getProduct();
   }, [id]);
 
@@ -65,14 +55,11 @@ function EditProduct() {
         image: imageUrl,
       })
       .eq("id", id);
-
     if (error) {
       alert(error.message);
       return;
     }
-
     alert("Updated");
-
     navigate("/admin/dashboard");
   }
 
